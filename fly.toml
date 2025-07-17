@@ -1,4 +1,4 @@
-app = "metabusiness"
+app = "gptbotbusiness"
 primary_region = "scl"
 
 [build]
