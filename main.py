@@ -6,32 +6,34 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-# Tokens desde secrets
-VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
+# Cargar variables de entorno desde secrets
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 META_TOKEN = os.environ.get("META_TOKEN")
 META_PHONE_NUMBER_ID = os.environ.get("META_PHONE_NUMBER_ID")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
 
-# Configurar OpenAI
+# Configurar clave de OpenAI
 openai.api_key = OPENAI_API_KEY
 
 @app.get("/")
 def root():
-    return {"message": "GPTBOT is running 🚀"}
+    return {"message": "Servidor de WhatsApp IA activo 🚀"}
 
-# Verificación del webhook (GET)
+# Verificación de webhook (GET)
 @app.get("/webhook")
 def verify_webhook(request: Request):
     params = dict(request.query_params)
-    if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == VERIFY_TOKEN:
+    if (
+        params.get("hub.mode") == "subscribe"
+        and params.get("hub.verify_token") == VERIFY_TOKEN
+    ):
         return int(params.get("hub.challenge"))
-    return JSONResponse(status_code=403, content={"error": "Verification failed"})
+    return JSONResponse(status_code=403, content={"error": "Token inválido"})
 
-# Recepción de mensajes (POST)
+# Recepción de mensajes de WhatsApp (POST)
 @app.post("/webhook")
-async def webhook(request: Request):
+async def receive_message(request: Request):
     data = await request.json()
-
     try:
         entry = data["entry"][0]
         changes = entry["changes"][0]
@@ -40,39 +42,41 @@ async def webhook(request: Request):
 
         if messages:
             message = messages[0]
-            user_message = message["text"]["body"]
+            user_text = message["text"]["body"]
             sender_id = message["from"]
 
-            # Consulta a OpenAI
-            ai_reply = ask_openai(user_message)
+            # Obtener respuesta IA
+            response_text = ask_openai(user_text)
 
             # Enviar respuesta por WhatsApp
-            send_whatsapp_message(sender_id, ai_reply)
+            send_whatsapp_message(sender_id, response_text)
 
         return {"status": "ok"}
 
     except Exception as e:
-        print("Error:", e)
+        print("❌ Error en /webhook:", e)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-# Función: consulta a OpenAI GPT
-def ask_openai(prompt: str) -> str:
+# Función: llamar a OpenAI GPT-3.5
+def ask_openai(user_input: str) -> str:
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+            model="gpt-3.5-turbo",  # Más barato
             messages=[
-                {"role": "system", "content": "Eres un asistente útil para clientes de una consultora."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": "Eres un asistente útil y claro que responde en español a preguntas de clientes de una consultora."},
+                {"role": "user", "content": user_input}
             ],
-            temperature=0.7,
-            max_tokens=300
+            max_tokens=250,
+            temperature=0.6,
         )
-        return response["choices"][0]["message"]["content"]
-    except Exception as e:
-        return "Lo siento, hubo un error al procesar tu solicitud."
+        return response.choices[0].message.content.strip()
 
-# Función: enviar mensaje por WhatsApp API
-def send_whatsapp_message(recipient_id: str, message: str):
+    except Exception as e:
+        print("❌ Error con OpenAI:", e)
+        return "Lo siento, ocurrió un error al procesar tu mensaje."
+
+# Función: responder al cliente por WhatsApp
+def send_whatsapp_message(recipient_id: str, text: str):
     url = f"https://graph.facebook.com/v18.0/{META_PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {META_TOKEN}",
@@ -82,7 +86,11 @@ def send_whatsapp_message(recipient_id: str, message: str):
         "messaging_product": "whatsapp",
         "to": recipient_id,
         "type": "text",
-        "text": {"body": message}
+        "text": {"body": text}
     }
-    response = requests.post(url, json=payload, headers=headers)
-    print("WhatsApp API response:", response.status_code, response.text)
+
+    try:
+        res = requests.post(url, json=payload, headers=headers)
+        print("✅ WhatsApp enviado:", res.status_code, res.text)
+    except Exception as e:
+        print("❌ Error enviando WhatsApp:", e)
