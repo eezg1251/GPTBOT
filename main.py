@@ -33,7 +33,13 @@ async def receive_message(request: Request):
 
     try:
         entry = body["entry"][0]
-        message = entry["changes"][0]["value"]["messages"][0]
+        change = entry["changes"][0]["value"]
+
+        if "messages" not in change:
+            print("📭 No hay mensajes nuevos. Solo estado de entrega.")
+            return {"status": "ok"}
+
+        message = change["messages"][0]
         text = message["text"]["body"]
         sender = message["from"]
 
