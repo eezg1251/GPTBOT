@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 import httpx
 from openai import OpenAI
 import langdetect
+import requests
 
 app = FastAPI()
 
