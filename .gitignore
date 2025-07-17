@@ -1,4 +1,16 @@
-.env
-*.json
+# Python
 __pycache__/
 *.pyc
+
+# Entornos
+.env
+*.env
+
+# Llaves/Secrets
+*.json
+*.key
+*.pem
+
+# IDE
+.vscode/
+.idea/
