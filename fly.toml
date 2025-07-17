@@ -5,10 +5,7 @@ primary_region = "scl"
   dockerfile = "Dockerfile"
 
 [env]
-  VERIFY_TOKEN = "pampaestrategica"
-  META_TOKEN = "707981835372331"
-  META_PHONE_NUMBER_ID = "745382635322651"
-  OPENAI_API_KEY = ""
+
 
 [[services]]
   internal_port = 8080
