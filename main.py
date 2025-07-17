@@ -13,6 +13,12 @@ META_TOKEN = os.getenv("META_TOKEN")
 META_PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# Credenciales Odoo desde secrets
+ODOO_URL = os.getenv("ODOO_URL")
+ODOO_DB = os.getenv("ODOO_DB")
+ODOO_USER = os.getenv("ODOO_USER")
+ODOO_PASSWORD = os.getenv("ODOO_PASSWORD")
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # 🧠 Prompt base personalizado PAMPA ESTRATÉGICA
@@ -112,8 +118,51 @@ def root():
 async def verify_webhook(request: Request):
     params = dict(request.query_params)
     if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == VERIFY_TOKEN:
-        return int(params.get("hub.challenge"))
+        return Response(content=params.get("hub.challenge"), media_type="text/plain")
     return {"status": "unauthorized"}
+
+# --- NUEVO: función para crear lead en Odoo ---
+def crear_lead_odoo(nombre, telefono, mensaje):
+    try:
+        # Autenticación en Odoo
+        login_url = f"{ODOO_URL}/web/session/authenticate"
+        login_payload = {
+            "jsonrpc": "2.0",
+            "params": {
+                "db": ODOO_DB,
+                "login": ODOO_USER,
+                "password": ODOO_PASSWORD
+            }
+        }
+        session = requests.Session()
+        login_res = session.post(login_url, json=login_payload, timeout=8)
+        login_res.raise_for_status()
+        uid = login_res.json()['result']['uid']
+
+        # Crear lead en Odoo
+        create_url = f"{ODOO_URL}/web/dataset/call_kw"
+        create_payload = {
+            "jsonrpc": "2.0",
+            "method": "call",
+            "params": {
+                "model": "crm.lead",
+                "method": "create",
+                "args": [{
+                    "name": f"WhatsApp - {nombre}",
+                    "contact_name": nombre,
+                    "phone": telefono,
+                    "description": mensaje,
+                }],
+                "kwargs": {},
+                "context": {"uid": uid}
+            }
+        }
+        res = session.post(create_url, json=create_payload, timeout=8)
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        print(f"❌ Error creando lead en Odoo: {e}")
+        return None
 
 @app.post("/webhook")
 async def receive_message(request: Request):
@@ -151,7 +200,19 @@ async def receive_message(request: Request):
         )
         reply = response.choices[0].message.content.strip()
 
-        # Enviar mensaje a WhatsApp
+        # Extraer nombre y teléfono (si existe profile)
+        if "contacts" in value and value["contacts"]:
+            nombre_contacto = value["contacts"][0].get("profile", {}).get("name", "Sin nombre")
+            telefono_contacto = value["contacts"][0]["wa_id"]
+        else:
+            nombre_contacto = "Desconocido"
+            telefono_contacto = sender
+
+        # --- Crear lead en Odoo ---
+        crear_lead_odoo(nombre_contacto, telefono_contacto, text)
+        print(f"✅ Lead enviado a Odoo: {nombre_contacto} ({telefono_contacto})")
+
+        # Enviar respuesta a WhatsApp
         url = f"https://graph.facebook.com/v19.0/{META_PHONE_NUMBER_ID}/messages"
         headers = {
             "Authorization": f"Bearer {META_TOKEN}",
