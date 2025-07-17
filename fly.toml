@@ -1,0 +1,28 @@
+app = "metabusiness"
+primary_region = "scl"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  VERIFY_TOKEN = "pampaestrategica"
+  META_TOKEN = "707981835372331"
+  META_PHONE_NUMBER_ID = "745382635322651"
+  OPENAI_API_KEY = ""
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.tcp_checks]]
+    interval = "10s"
+    timeout = "2s"
+    grace_period = "5s"
