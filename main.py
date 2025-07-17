@@ -6,16 +6,18 @@ from openai import OpenAI
 
 app = FastAPI()
 
+# Variables de entorno
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 META_TOKEN = os.getenv("META_TOKEN")
 META_PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Cliente de OpenAI
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 @app.get("/")
 def root():
-    return {"status": "ok"}
+    return {"message": "Servidor de WhatsApp IA activo 🚀"}
 
 @app.get("/webhook")
 async def verify_webhook(request: Request):
@@ -36,7 +38,7 @@ async def receive_message(request: Request):
         sender = message["from"]
 
         # 🧠 Obtener respuesta de OpenAI
-        response = client.chat.completions.create(
+        response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": text}]
         )
@@ -55,8 +57,8 @@ async def receive_message(request: Request):
             "text": {"body": reply}
         }
 
-        async with httpx.AsyncClient() as client:
-            r = await client.post(url, headers=headers, json=payload)
+        async with httpx.AsyncClient() as http_client:
+            r = await http_client.post(url, headers=headers, json=payload)
             print("✅ WhatsApp enviado:", r.status_code, r.text)
 
     except Exception as e:
