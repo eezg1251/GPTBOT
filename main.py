@@ -349,8 +349,24 @@ async def receive_message(request: Request):
         # ====== FIN GUARDADO MENSAJE ======
 
         # --- Crear lead en Odoo ---
+        # --- Control anti-duplicación de lead (protege contra múltiples mensajes rápidos) ---
+        async with aiosqlite.connect("mensajes.db") as db:
+            # Verifica si ya existe lead para este usuario
+            async with db.execute(
+                "SELECT id FROM mensajes WHERE whatsapp_id=? AND mensaje_enviado LIKE '%Lead creado en Odoo%' ORDER BY fecha DESC LIMIT 1",
+                (telefono_contacto,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                already_lead = row is not None
+
+    if not already_lead:
+        # Crea el lead en Odoo
         crear_lead_odoo(nombre_contacto, telefono_contacto, text)
         print(f"✅ Lead enviado a Odoo: {nombre_contacto} ({telefono_contacto})")
+        # Marca el mensaje como lead creado (opcional: podrías guardar algo especial aquí)
+    else:
+        print(f"ℹ️ Ya existe lead creado para {telefono_contacto}. No se crea lead nuevo.")
+# --- Fin del control anti-duplicación de lead ---
 
         # Enviar respuesta a WhatsApp
         url = f"https://graph.facebook.com/v19.0/{META_PHONE_NUMBER_ID}/messages"
