@@ -365,9 +365,17 @@ async def receive_message(request: Request):
             # Crea el lead en Odoo
             crear_lead_odoo(nombre_contacto, telefono_contacto, text)
             print(f"✅ Lead enviado a Odoo: {nombre_contacto} ({telefono_contacto})")
-            # Opcional: podrías guardar en la BD que este lead fue creado
+            # Graba en la BD que ya se creó el lead
+            async with aiosqlite.connect("mensajes.db") as db:
+                await db.execute(
+                    "INSERT INTO mensajes (whatsapp_id, mensaje_enviado, fecha) VALUES (?, ?, datetime('now'))",
+                    (telefono_contacto, f"Lead creado en Odoo para {nombre_contacto}",)
+                )
+                await db.commit()
         else:
             print(f"ℹ️ Ya existe lead creado para {telefono_contacto}. No se crea lead nuevo.")
+
+        
         # --- Fin del control anti-duplicación de lead ---
 
         # Enviar respuesta a WhatsApp
