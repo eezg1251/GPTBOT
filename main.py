@@ -13,6 +13,9 @@ import secrets
 from fastapi.responses import StreamingResponse
 import csv
 import io
+from collections import defaultdict
+import json
+from datetime import datetime
 
 app = FastAPI()
 
@@ -406,12 +409,10 @@ async def dashboard(
     q: str = "",
     credentials: HTTPBasicCredentials = Depends(check_auth)
 ):
-    # Asegura que la página sea al menos 1
     page = max(1, page)
     page_size = 50
     offset = (page - 1) * page_size
 
-    # Buscador SQL (búsqueda básica en varios campos)
     search_sql = ""
     params = []
     if q:
@@ -424,7 +425,6 @@ async def dashboard(
         search_term = f"%{q}%"
         params.extend([search_term] * 5)
 
-    # Totales y mensajes de la página
     async with aiosqlite.connect("mensajes.db") as db:
         async with db.execute("SELECT COUNT(*) FROM mensajes") as cursor:
             total_mensajes = (await cursor.fetchone())[0]
@@ -436,8 +436,6 @@ async def dashboard(
             total_leads = (await cursor.fetchone())[0]
         async with db.execute(f"SELECT COUNT(*) FROM mensajes {search_sql}", params) as cursor:
             total = (await cursor.fetchone())[0]
-
-        # Mensajes de la página
         async with db.execute(
             f"""SELECT id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado 
                 FROM mensajes {search_sql} 
@@ -446,15 +444,43 @@ async def dashboard(
         ) as cursor:
             mensajes = await cursor.fetchall()
 
+        # Datos para KPIs y gráficos
+        async with db.execute(
+            "SELECT fecha, mensaje_recibido, mensaje_enviado FROM mensajes ORDER BY fecha ASC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            by_date = defaultdict(lambda: {"recibidos": 0, "enviados": 0, "leads": 0})
+            for row in rows:
+                fecha_str = row[0][:10]
+                try:
+                    fecha = datetime.fromisoformat(fecha_str)
+                except:
+                    continue
+                key = fecha.strftime("%Y-%m-%d")
+                if row[1] and row[1].strip():
+                    by_date[key]["recibidos"] += 1
+                if row[2] and row[2].strip():
+                    by_date[key]["enviados"] += 1
+                if row[2] and "Lead creado en Odoo" in row[2]:
+                    by_date[key]["leads"] += 1
+
+            # Preparar datos para Chart.js
+            labels = sorted(by_date.keys())
+            data_recibidos = [by_date[k]["recibidos"] for k in labels]
+            data_enviados = [by_date[k]["enviados"] for k in labels]
+            data_leads = [by_date[k]["leads"] for k in labels]
+
     prev_page = page - 1
     next_page = page + 1
     total_pages = ((total-1)//page_size) + 1
+    conversion_rate = round((total_leads / total_recibidos) * 100, 1) if total_recibidos else 0
 
     html = f"""
 <html>
 <head>
     <title>Mensajes WhatsApp - Dashboard</title>
     <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css' rel='stylesheet'>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
       .kpi-card {{ min-width: 200px; }}
       .table-responsive {{ max-height: 60vh; overflow-y: auto; }}
@@ -478,6 +504,7 @@ async def dashboard(
 <body class="bg-light">
 
 <div class="container py-4">
+
   <!-- KPIs -->
   <div class="row mb-4">
     <div class="col kpi-card">
@@ -501,6 +528,37 @@ async def dashboard(
         <div class="card-body">
           <h6 class="card-title">Leads creados</h6>
           <h3 class="card-text">{total_leads}</h3>
+        </div>
+      </div>
+    </div>
+    <div class="col kpi-card">
+      <div class="card text-white bg-warning mb-3">
+        <div class="card-body">
+          <h6 class="card-title">Tasa conversión a Lead</h6>
+          <h3 class="card-text">{conversion_rate}%</h3>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gráficos -->
+  <div class="row mb-4">
+    <div class="col-md-7">
+      <div class="card shadow mb-3">
+        <div class="card-body">
+          <canvas id="evolucion"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-5">
+      <div class="card shadow mb-3">
+        <div class="card-body">
+          <canvas id="pie"></canvas>
+        </div>
+      </div>
+      <div class="card shadow mb-3">
+        <div class="card-body">
+          <canvas id="gauge"></canvas>
         </div>
       </div>
     </div>
@@ -535,7 +593,6 @@ async def dashboard(
       </thead>
       <tbody>
 """
-    # Filas de la tabla
     for row in mensajes:
         id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado = row
         is_lead = "Lead creado en Odoo" in (mensaje_enviado or "")
@@ -554,6 +611,54 @@ async def dashboard(
     </table>
   </div>
 </div>
+<script>
+const labels = """ + json.dumps(labels) + """;
+const dataRecibidos = """ + json.dumps(data_recibidos) + """;
+const dataEnviados = """ + json.dumps(data_enviados) + """;
+const dataLeads = """ + json.dumps(data_leads) + """;
+
+new Chart(document.getElementById('evolucion'), {
+    type: 'line',
+    data: {
+        labels: labels,
+        datasets: [
+            {label: 'Recibidos', data: dataRecibidos, borderColor:'#0d6efd', backgroundColor:'rgba(13,110,253,0.15)', tension:0.3, fill:true},
+            {label: 'Enviados', data: dataEnviados, borderColor:'#198754', backgroundColor:'rgba(25,135,84,0.15)', tension:0.3, fill:true},
+            {label: 'Leads', data: dataLeads, borderColor:'#0dcaf0', backgroundColor:'rgba(13,202,240,0.15)', tension:0.3, fill:true}
+        ]
+    },
+    options: {
+        responsive:true,
+        plugins: {legend:{position:'top'}, title:{display:true, text:'Evolución diaria'}}
+    }
+});
+new Chart(document.getElementById('pie'), {
+    type: 'pie',
+    data: {
+        labels: ['Recibidos', 'Enviados'],
+        datasets: [{data: [dataRecibidos.reduce((a,b)=>a+b,0), dataEnviados.reduce((a,b)=>a+b,0)]}]
+    },
+    options: {
+        plugins: {legend:{position:'bottom'}, title:{display:true, text:'Distribución Recibidos vs Enviados'}}
+    }
+});
+// Gauge para tasa conversión (usando doughnut Chart.js)
+new Chart(document.getElementById('gauge'), {
+    type: 'doughnut',
+    data: {
+        labels: ['Conversión a Lead', 'No Leads'],
+        datasets: [{
+            data: [""" + str(conversion_rate) + """, """ + str(100-conversion_rate) + """],
+            backgroundColor: ['#ffc107','#e9ecef'],
+            borderWidth: 0
+        }]
+    },
+    options: {
+        rotation: -90, circumference: 180, cutout:'80%',
+        plugins: {legend:{display:false}, title:{display:true, text:'Tasa de conversión'}}
+    }
+});
+</script>
 </body>
 </html>
 """
