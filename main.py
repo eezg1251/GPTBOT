@@ -425,6 +425,14 @@ async def dashboard(
 
     # Total de mensajes (para paginación)
     async with aiosqlite.connect("mensajes.db") as db:
+        async with db.execute("SELECT COUNT(*) FROM mensajes") as cursor:
+            total_mensajes = (await cursor.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM mensajes WHERE mensaje_recibido != '' AND mensaje_recibido IS NOT NULL") as cursor:
+            total_recibidos = (await cursor.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM mensajes WHERE mensaje_enviado != '' AND mensaje_enviado IS NOT NULL") as cursor:
+            total_enviados = (await cursor.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM mensajes WHERE mensaje_enviado LIKE '%Lead creado en Odoo%'") as cursor:
+            total_leads = (await cursor.fetchone())[0]
         async with db.execute(f"SELECT COUNT(*) FROM mensajes {search_sql}", params) as cursor:
             total = (await cursor.fetchone())[0]
 
@@ -437,75 +445,112 @@ async def dashboard(
         ) as cursor:
             mensajes = await cursor.fetchall()
 
-    # HTML
-    html = f"""
-    <html>
-    <head>
-        <title>Mensajes WhatsApp - Dashboard</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; padding: 10px; }}
-            table {{ border-collapse: collapse; width: 100%; font-size: 15px; }}
-            th, td {{ border: 1px solid #dddddd; padding: 8px; word-break: break-all; }}
-            th {{ background-color: #f2f2f2; }}
-            tr:nth-child(even) {{ background-color: #fafafa; }}
-            input[type='text']{{ font-size:15px; padding:4px; }}
-            button, .btn-small {{ font-size:15px; padding:4px 10px; margin: 2px; cursor:pointer; }}
-            @media (max-width: 700px) {{
-                table, thead, tbody, th, td, tr {{ display:block; }}
-                th, td {{ border: none; }}
-                td {{ padding: 8px 0; }}
-                tr {{ margin-bottom: 15px; border-bottom: 1px solid #ddd; }}
-            }}
-        </style>
-        <script>
-            function borrar(id) {{
-                if(confirm('¿Seguro que quieres borrar este mensaje?')){{
-                    fetch('/borrar_mensaje?id=' + id)
-                        .then(r => location.reload());
-                }}
-            }}
-            function descargarCSV() {{
-                window.location = '/descargar_csv?q=' + encodeURIComponent(document.getElementById('q').value);
-            }}
-        </script>
-    </head>
-    <body>
-    <h2>Mensajes WhatsApp (página {page} de {((total-1)//page_size)+1})</h2>
-    <form method="get" style="margin-bottom:10px;">
-        <input type="text" id="q" name="q" value="{q}" placeholder="Buscar...">
-        <button type="submit">Buscar</button>
-        <button type="button" onclick="descargarCSV()">Descargar CSV</button>
+  html = f"""
+<html>
+<head>
+    <title>Mensajes WhatsApp - Dashboard</title>
+    <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css' rel='stylesheet'>
+    <style>
+      .kpi-card {{ min-width: 200px; }}
+      .table-responsive {{ max-height: 60vh; }}
+      td, th {{ vertical-align: middle; word-break: break-word; }}
+      .sticky-th {{ position: sticky; top: 0; background: #f8f9fa; z-index: 2; }}
+      .btn-small {{ font-size:15px; padding:4px 10px; margin:2px; cursor:pointer; }}
+    </style>
+    <script>
+      function borrar(id) {{
+          if(confirm('¿Seguro que quieres borrar este mensaje?')){{
+              fetch('/borrar_mensaje?id=' + id)
+                  .then(r => location.reload());
+          }}
+      }}
+      function descargarCSV() {{
+          window.location = '/descargar_csv?q=' + encodeURIComponent(document.getElementById('q').value);
+      }}
+    </script>
+</head>
+<body class="bg-light">
+
+<div class="container py-4">
+  <!-- KPIs -->
+  <div class="row mb-4">
+    <div class="col kpi-card">
+      <div class="card text-white bg-primary mb-3">
+        <div class="card-body">
+          <h6 class="card-title">Recibidos</h6>
+          <h3 class="card-text">{total_recibidos}</h3>
+        </div>
+      </div>
+    </div>
+    <div class="col kpi-card">
+      <div class="card text-white bg-success mb-3">
+        <div class="card-body">
+          <h6 class="card-title">Enviados</h6>
+          <h3 class="card-text">{total_enviados}</h3>
+        </div>
+      </div>
+    </div>
+    <div class="col kpi-card">
+      <div class="card text-white bg-info mb-3">
+        <div class="card-body">
+          <h6 class="card-title">Leads creados</h6>
+          <h3 class="card-text">{total_leads}</h3>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Buscador y acciones -->
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <form method="get" class="mb-0 w-50 d-flex">
+        <input type="text" id="q" name="q" class="form-control me-2" value="{q}" placeholder="Buscar...">
+        <button type="submit" class="btn btn-outline-primary me-2">Buscar</button>
+        <button type="button" onclick="descargarCSV()" class="btn btn-outline-secondary">Descargar CSV</button>
     </form>
-    <table>
+    <div>
+      <span class="me-3">Página <b>{page}</b> de <b>{((total-1)//page_size)+1}</b></span>
+      {"<a href='?page=%d&q=%s'><button class='btn btn-outline-secondary btn-sm'>&larr; Anterior</button></a>" % (page-1, q) if page > 1 else ""}
+      {"<a href='?page=%d&q=%s'><button class='btn btn-outline-secondary btn-sm'>Siguiente &rarr;</button></a>" % (page+1, q) if offset + page_size < total else ""}
+    </div>
+  </div>
+
+  <!-- Tabla de mensajes -->
+  <div class="table-responsive shadow-sm rounded">
+    <table class="table table-hover table-bordered align-middle mb-0" id="tablaMensajes">
+      <thead>
         <tr>
-            <th>Fecha</th>
-            <th>WhatsApp ID</th>
-            <th>Nombre</th>
-            <th>Recibido</th>
-            <th>Enviado</th>
-            <th></th>
+          <th class="sticky-th">Fecha</th>
+          <th class="sticky-th">WhatsApp ID</th>
+          <th class="sticky-th">Nombre</th>
+          <th class="sticky-th">Recibido</th>
+          <th class="sticky-th">Enviado</th>
+          <th class="sticky-th"></th>
         </tr>
-    """
-    for row in mensajes:
-        id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado = row
-        html += f"""<tr>
+      </thead>
+      <tbody>
+"""
+
+for row in mensajes:
+    id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado = row
+    html += f"""<tr>
         <td>{fecha}</td>
         <td>{whatsapp_id}</td>
         <td>{nombre}</td>
         <td>{mensaje_recibido}</td>
         <td>{mensaje_enviado}</td>
-        <td><button class='btn-small' onclick="borrar({id})">🗑️</button></td>
-        </tr>"""
+        <td><button class='btn-small btn btn-danger btn-sm' onclick="borrar({id})">🗑️</button></td>
+    </tr>"""
 
-    html += "</table><div style='margin-top:12px;'>"
+html += """
+      </tbody>
+    </table>
+  </div>
+</div>
+</body>
+</html>
+"""
 
-    if page > 1:
-        html += f'<a href="?page={page-1}&q={q}"><button>&larr; Anterior</button></a>'
-    if offset + page_size < total:
-        html += f'<a href="?page={page+1}&q={q}"><button>Siguiente &rarr;</button></a>'
-
-    html += "</div></body></html>"
-    return HTMLResponse(content=html)
+return HTMLResponse(content=html)
 
 @app.get("/borrar_mensaje")
 async def borrar_mensaje(id: int, credentials: HTTPBasicCredentials = Depends(check_auth)):
