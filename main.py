@@ -5,6 +5,8 @@ import httpx
 from openai import OpenAI
 import langdetect
 import requests
+import aiosqlite
+
 
 app = FastAPI()
 
@@ -34,6 +36,7 @@ Debes:
 - Entender frases informales como "cuánto cobran", "me ayudan con ferias", "diseño bonito", "precios", "valores", "qué valor tienen", "cuánto cuesta", "cuánto sale", "tarifas", y responder siempre mostrando los precios de los planes.
 - Si te piden información de los servicios, lista los tres planes principales con su precio, resumen y emoji representativo.
 - Responder de forma cordial a mensajes de despedida o agradecimiento (ej: "gracias", "adiós", "nos vemos", "se agradece"), usando emojis y una frase breve de cierre.
+- Si el usuario pregunta qué tipos de empresas trabajan con nosotros, responde que atendemos a todos los tipos de razones sociales disponibles en Chile, incluyendo: Sociedad por Acciones (SpA), Empresa Individual de Responsabilidad Limitada (EIRL), Sociedad de Responsabilidad Limitada (Ltda.), Sociedad Anónima Cerrada y Abierta (S.A.), Sociedad Colectiva, Sociedad en Comandita, Sociedad de Hecho, Cooperativas, Asociaciones y Fundaciones, y personas naturales con giro de IVA. Nuestro enfoque es inclusivo y apoyamos tanto a empresas grandes como a pequeños emprendedores de cualquier forma legal.
 - Detectar cuando una consulta requiere atención humana, y responder:
 "Este caso requiere un análisis más profundo. Escríbenos a contacto@pampaestrategica.cl o directamente al WhatsApp de Esteban Zepeda: +56942342276. También puedes agendar en https://www.pampaestrategica.cl/appointment/1 📩"
 - Si el usuario pide “más detalle”, “detalles”, “más información” o algo similar sobre un plan o servicio, responde explicando las estrategias que aplicamos (ej: branding, comunicación, automatización, ventas, análisis legal) y los principales KPI que medimos (alcance de marca, leads generados, tasa de cierre de ventas, crecimiento de seguidores, reducción de costos, cumplimiento legal, entre otros).
@@ -77,6 +80,7 @@ You must:
 - Reply in English if the message is in English, or in Spanish if it's in Spanish. Never mix languages in a single response.
 - Understand informal phrases like "how much do you charge", "do you help with fairs", "nice design", "prices", "rates", "how much is it", "how much does it cost", "fees", "values", and always reply showing the prices of the plans.
 - If asked about the services, list the three main plans with their prices, summary, and a representative emoji.
+- If the user asks about the types of companies we work with, reply that we serve all types of business entities available in Chile, including: Simplified Joint Stock Companies (SpA), Individual Limited Liability Enterprises (EIRL), Limited Liability Companies (Ltda.), Closed and Open Stock Corporations (S.A.), General Partnerships, Limited Partnerships, De Facto Partnerships, Cooperatives, Associations and Foundations, and sole proprietors with VAT registration. Our approach is inclusive and we support both large companies and small entrepreneurs, regardless of their legal form.
 - Reply in a friendly way to farewells or thank you messages (e.g., "thanks", "bye", "see you", "appreciate it"), using emojis and a brief closing phrase.
 - If a query needs human attention, answer:
 "This case requires a deeper analysis. Please email us at contacto@pampaestrategica.cl or write directly to Esteban Zepeda on WhatsApp: +56942342276. You can also book a meeting at https://www.pampaestrategica.cl/appointment/1 📩"
@@ -111,6 +115,33 @@ You must:
 - "Do you work with social enterprises?" → "Yes, we support social enterprises and impact-driven projects. 🤗🌱"
 - "Can you give me more details about the Integral Plan?" → "Of course! The Integral Plan includes branding strategies, digital presence optimization, CRM implementation, and personalized commercial consulting. We track KPIs like brand reach, leads generated, sales conversion rate, social media growth, and operational efficiency. 📊🚀 Would you like a concrete example?"
 """
+
+@app.on_event("startup")
+async def startup():
+    async with aiosqlite.connect("mensajes.db") as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS mensajes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fecha TEXT,
+                whatsapp_id TEXT,
+                nombre TEXT,
+                mensaje_recibido TEXT,
+                mensaje_enviado TEXT
+            )
+        """)
+        await db.commit()
+
+import datetime
+
+async def guardar_mensaje(fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado):
+    async with aiosqlite.connect("mensajes.db") as db:
+        await db.execute("""
+            INSERT INTO mensajes (fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado)
+            VALUES (?, ?, ?, ?, ?)
+        """, (fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado))
+        await db.commit()
+
+
 @app.get("/")
 def root():
     return {"status": "ok"}
@@ -208,6 +239,17 @@ async def receive_message(request: Request):
         else:
             nombre_contacto = "Desconocido"
             telefono_contacto = sender
+
+        # ====== GUARDAR EL MENSAJE EN LA BASE DE DATOS ======
+        fecha_actual = datetime.datetime.utcnow().isoformat()
+        await guardar_mensaje(
+            fecha_actual,
+            telefono_contacto,
+            nombre_contacto,
+            text,
+            reply
+        )
+        # ====== FIN GUARDADO MENSAJE ======
 
         # --- Crear lead en Odoo ---
         crear_lead_odoo(nombre_contacto, telefono_contacto, text)
