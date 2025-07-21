@@ -372,29 +372,6 @@ async def receive_message(request: Request):
     return {"status": "ok"}
 
 
-
-        # Enviar respuesta a WhatsApp
-        url = f"https://graph.facebook.com/v19.0/{META_PHONE_NUMBER_ID}/messages"
-        headers = {
-            "Authorization": f"Bearer {META_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": sender,
-            "type": "text",
-            "text": {"body": reply}
-        }
-
-        async with httpx.AsyncClient() as http_client:
-            r = await http_client.post(url, headers=headers, json=payload)
-            print("✅ WhatsApp enviado:", r.status_code, r.text)
-
-    except Exception as e:
-        print("❌ Error en el webhook:", e)
-
-    return {"status": "ok"}
-
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     page: int = 1,
