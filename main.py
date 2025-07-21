@@ -1,21 +1,18 @@
-    # main.py
 import os
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 import httpx
 from openai import OpenAI
 import langdetect
 import requests
 import aiosqlite
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi import Depends
 import secrets
-from fastapi.responses import StreamingResponse
 import csv
 import io
+import datetime
 
 app = FastAPI()
-
 security = HTTPBasic()
 
 DASH_USER = os.getenv("DASH_USER", "admin")
@@ -45,8 +42,6 @@ ODOO_USER = os.getenv("ODOO_USER")
 ODOO_PASSWORD = os.getenv("ODOO_PASSWORD")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
-
-# 🧠 Prompt base personalizado PAMPA ESTRATÉGICA
 
 base_prompt_es = """
 Eres el asesor virtual de PAMPA ESTRATÉGICA 🧠, una consultora de Atacama y Coquimbo. Usa siempre emojis en tus respuestas para hacerlas más cercanas y dinámicas.
@@ -185,22 +180,19 @@ async def startup():
                 whatsapp_id TEXT,
                 nombre TEXT,
                 mensaje_recibido TEXT,
-                mensaje_enviado TEXT
+                mensaje_enviado TEXT,
+                is_lead_created INTEGER DEFAULT 0
             )
         """)
         await db.commit()
 
-import datetime
-
-async def guardar_mensaje(fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado):
+async def guardar_mensaje(fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado, is_lead_created=0):
     async with aiosqlite.connect("mensajes.db") as db:
         await db.execute("""
-            INSERT INTO mensajes (fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado)
-            VALUES (?, ?, ?, ?, ?)
-        """, (fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado))
+            INSERT INTO mensajes (fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado, is_lead_created)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado, is_lead_created))
         await db.commit()
-
-from fastapi.responses import JSONResponse
 
 # Recupera los últimos N turnos de conversación (usuario y bot) para un usuario específico
 async def get_historial_usuario(whatsapp_id, n=6):
@@ -210,7 +202,6 @@ async def get_historial_usuario(whatsapp_id, n=6):
             "SELECT mensaje_recibido, mensaje_enviado FROM mensajes WHERE whatsapp_id = ? ORDER BY fecha DESC LIMIT ?", (whatsapp_id, n)
         ) as cursor:
             rows = await cursor.fetchall()
-            # Los mensajes se traen del más reciente al más antiguo, así que los invertimos para mantener el orden correcto
             for recibido, enviado in reversed(rows):
                 if recibido:
                     historial.append({"role": "user", "content": recibido})
@@ -218,38 +209,9 @@ async def get_historial_usuario(whatsapp_id, n=6):
                     historial.append({"role": "assistant", "content": enviado})
     return historial
 
-
-@app.get("/mensajes_test")
-async def mensajes_test():
-    mensajes = []
-    async with aiosqlite.connect("mensajes.db") as db:
-        async with db.execute("SELECT fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado FROM mensajes ORDER BY fecha DESC LIMIT 20") as cursor:
-            async for row in cursor:
-                fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado = row
-                mensajes.append({
-                    "fecha": fecha,
-                    "whatsapp_id": whatsapp_id,
-                    "nombre": nombre,
-                    "mensaje_recibido": mensaje_recibido,
-                    "mensaje_enviado": mensaje_enviado,
-                })
-    return JSONResponse(content=mensajes)
-    
-@app.get("/")
-def root():
-    return {"status": "ok"}
-
-@app.get("/webhook")
-async def verify_webhook(request: Request):
-    params = dict(request.query_params)
-    if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == VERIFY_TOKEN:
-        return Response(content=params.get("hub.challenge"), media_type="text/plain")
-    return {"status": "unauthorized"}
-
 # --- NUEVO: función para crear lead en Odoo ---
 def crear_lead_odoo(nombre, telefono, mensaje):
     try:
-        # Autenticación en Odoo
         login_url = f"{ODOO_URL}/web/session/authenticate"
         login_payload = {
             "jsonrpc": "2.0",
@@ -264,7 +226,6 @@ def crear_lead_odoo(nombre, telefono, mensaje):
         login_res.raise_for_status()
         uid = login_res.json()['result']['uid']
 
-        # Crear lead en Odoo
         create_url = f"{ODOO_URL}/web/dataset/call_kw"
         create_payload = {
             "jsonrpc": "2.0",
@@ -288,6 +249,17 @@ def crear_lead_odoo(nombre, telefono, mensaje):
     except Exception as e:
         print(f"❌ Error creando lead en Odoo: {e}")
         return None
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+@app.get("/webhook")
+async def verify_webhook(request: Request):
+    params = dict(request.query_params)
+    if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == VERIFY_TOKEN:
+        return Response(content=params.get("hub.challenge"), media_type="text/plain")
+    return {"status": "unauthorized"}
 
 @app.post("/webhook")
 async def receive_message(request: Request):
@@ -315,14 +287,11 @@ async def receive_message(request: Request):
         # Seleccionar prompt según idioma
         system_prompt = base_prompt_en if detected_lang == "en" else base_prompt_es
 
-        # Respuesta de OpenAI
-        # 1. Recupera historial reciente del usuario (por ejemplo, 6 turnos)
+        # Recupera historial reciente del usuario
         historial = await get_historial_usuario(sender, n=6)
-
-        # 2. Construye el contexto de mensajes para OpenAI
         mensajes_openai = [{"role": "system", "content": system_prompt}] + historial + [{"role": "user", "content": text}]
 
-        # 3. Llama a OpenAI con historial
+        # Llama a OpenAI
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=mensajes_openai
@@ -337,20 +306,52 @@ async def receive_message(request: Request):
             nombre_contacto = "Desconocido"
             telefono_contacto = sender
 
-        # ====== GUARDAR EL MENSAJE EN LA BASE DE DATOS ======
+        # Guardar mensaje en la base de datos (aún sin lead)
         fecha_actual = datetime.datetime.utcnow().isoformat()
         await guardar_mensaje(
             fecha_actual,
             telefono_contacto,
             nombre_contacto,
             text,
-            reply
+            reply,
+            0  # is_lead_created
         )
-        # ====== FIN GUARDADO MENSAJE ======
 
-        # --- Crear lead en Odoo ---
+# --- Control anti-duplicación de lead (protege contra múltiples mensajes rápidos) ---
+# Este bloque asegura que aunque lleguen varios mensajes simultáneos, solo se crea un lead por usuario.
+
+async with aiosqlite.connect("mensajes.db") as db:
+    # Verifica si ya existe lead para este usuario
+    async with db.execute(
+        "SELECT id FROM mensajes WHERE whatsapp_id=? AND is_lead_created=1 ORDER BY fecha DESC LIMIT 1",
+        (telefono_contacto,)
+    ) as cursor:
+        row = await cursor.fetchone()
+        already_lead = row is not None
+
+    if not already_lead:
+        # Crea el lead en Odoo
         crear_lead_odoo(nombre_contacto, telefono_contacto, text)
         print(f"✅ Lead enviado a Odoo: {nombre_contacto} ({telefono_contacto})")
+        # Marca el último mensaje como lead creado
+        async with db.execute(
+            "SELECT id FROM mensajes WHERE whatsapp_id=? ORDER BY fecha DESC LIMIT 1",
+            (telefono_contacto,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                last_id = row[0]
+                await db.execute(
+                    "UPDATE mensajes SET is_lead_created=1 WHERE id=?",
+                    (last_id,)
+                )
+                await db.commit()
+    else:
+        print(f"ℹ️ Ya existe lead creado para {telefono_contacto}. No se crea lead nuevo.")
+
+# --- Fin del control anti-duplicación de lead ---
+
+
 
         # Enviar respuesta a WhatsApp
         url = f"https://graph.facebook.com/v19.0/{META_PHONE_NUMBER_ID}/messages"
@@ -373,18 +374,16 @@ async def receive_message(request: Request):
         print("❌ Error en el webhook:", e)
 
     return {"status": "ok"}
-    
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     page: int = 1,
     q: str = "",
     credentials: HTTPBasicCredentials = Depends(check_auth)
 ):
-    # Parámetros de paginación
     page_size = 50
     offset = (page - 1) * page_size
 
-    # Buscador SQL (búsqueda básica en varios campos)
     search_sql = ""
     params = []
     if q:
@@ -397,21 +396,18 @@ async def dashboard(
         search_term = f"%{q}%"
         params.extend([search_term] * 5)
 
-    # Total de mensajes (para paginación)
     async with aiosqlite.connect("mensajes.db") as db:
         async with db.execute(f"SELECT COUNT(*) FROM mensajes {search_sql}", params) as cursor:
             total = (await cursor.fetchone())[0]
 
-        # Mensajes de la página
         async with db.execute(
-            f"""SELECT id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado 
+            f"""SELECT id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado, is_lead_created
             FROM mensajes {search_sql} 
             ORDER BY fecha DESC LIMIT ? OFFSET ?""",
             params + [page_size, offset]
         ) as cursor:
             mensajes = await cursor.fetchall()
 
-    # HTML
     html = f"""
     <html>
     <head>
@@ -452,6 +448,7 @@ async def dashboard(
     </form>
     <table>
         <tr>
+            <th>Lead</th>
             <th>Fecha</th>
             <th>WhatsApp ID</th>
             <th>Nombre</th>
@@ -461,8 +458,9 @@ async def dashboard(
         </tr>
     """
     for row in mensajes:
-        id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado = row
+        id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado, is_lead_created = row
         html += f"""<tr>
+        <td>{'✅' if is_lead_created else ''}</td>
         <td>{fecha}</td>
         <td>{whatsapp_id}</td>
         <td>{nombre}</td>
@@ -472,12 +470,10 @@ async def dashboard(
         </tr>"""
 
     html += "</table><div style='margin-top:12px;'>"
-
     if page > 1:
         html += f'<a href="?page={page-1}&q={q}"><button>&larr; Anterior</button></a>'
     if offset + page_size < total:
         html += f'<a href="?page={page+1}&q={q}"><button>Siguiente &rarr;</button></a>'
-
     html += "</div></body></html>"
     return HTMLResponse(content=html)
 
@@ -504,17 +500,17 @@ async def descargar_csv(q: str = "", credentials: HTTPBasicCredentials = Depends
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Fecha", "WhatsApp ID", "Nombre", "Recibido", "Enviado"])
+    writer.writerow(["Lead", "Fecha", "WhatsApp ID", "Nombre", "Recibido", "Enviado"])
 
     async with aiosqlite.connect("mensajes.db") as db:
         async with db.execute(
-            f"""SELECT fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado 
+            f"""SELECT is_lead_created, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado 
             FROM mensajes {search_sql} 
             ORDER BY fecha DESC""",
             params
         ) as cursor:
             async for row in cursor:
-                writer.writerow(row)
+                writer.writerow(['✅' if row[0] else '', *row[1:]])
 
     output.seek(0)
     return StreamingResponse(iter([output.read()]), media_type="text/csv", headers={
