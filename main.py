@@ -317,39 +317,59 @@ async def receive_message(request: Request):
             0  # is_lead_created
         )
 
-# --- Control anti-duplicación de lead (protege contra múltiples mensajes rápidos) ---
-# Este bloque asegura que aunque lleguen varios mensajes simultáneos, solo se crea un lead por usuario.
+        # --- Control anti-duplicación de lead (protege contra múltiples mensajes rápidos) ---
+        # Este bloque asegura que aunque lleguen varios mensajes simultáneos, solo se crea un lead por usuario.
+        async with aiosqlite.connect("mensajes.db") as db:
+            # Verifica si ya existe lead para este usuario
+            async with db.execute(
+                "SELECT id FROM mensajes WHERE whatsapp_id=? AND is_lead_created=1 ORDER BY fecha DESC LIMIT 1",
+                (telefono_contacto,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                already_lead = row is not None
 
-async with aiosqlite.connect("mensajes.db") as db:
-    # Verifica si ya existe lead para este usuario
-    async with db.execute(
-        "SELECT id FROM mensajes WHERE whatsapp_id=? AND is_lead_created=1 ORDER BY fecha DESC LIMIT 1",
-        (telefono_contacto,)
-    ) as cursor:
-        row = await cursor.fetchone()
-        already_lead = row is not None
+            if not already_lead:
+                # Crea el lead en Odoo
+                crear_lead_odoo(nombre_contacto, telefono_contacto, text)
+                print(f"✅ Lead enviado a Odoo: {nombre_contacto} ({telefono_contacto})")
+                # Marca el último mensaje como lead creado
+                async with db.execute(
+                    "SELECT id FROM mensajes WHERE whatsapp_id=? ORDER BY fecha DESC LIMIT 1",
+                    (telefono_contacto,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    if row:
+                        last_id = row[0]
+                        await db.execute(
+                            "UPDATE mensajes SET is_lead_created=1 WHERE id=?",
+                            (last_id,)
+                        )
+                        await db.commit()
+            else:
+                print(f"ℹ️ Ya existe lead creado para {telefono_contacto}. No se crea lead nuevo.")
+        # --- Fin del control anti-duplicación de lead ---
 
-    if not already_lead:
-        # Crea el lead en Odoo
-        crear_lead_odoo(nombre_contacto, telefono_contacto, text)
-        print(f"✅ Lead enviado a Odoo: {nombre_contacto} ({telefono_contacto})")
-        # Marca el último mensaje como lead creado
-        async with db.execute(
-            "SELECT id FROM mensajes WHERE whatsapp_id=? ORDER BY fecha DESC LIMIT 1",
-            (telefono_contacto,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                last_id = row[0]
-                await db.execute(
-                    "UPDATE mensajes SET is_lead_created=1 WHERE id=?",
-                    (last_id,)
-                )
-                await db.commit()
-    else:
-        print(f"ℹ️ Ya existe lead creado para {telefono_contacto}. No se crea lead nuevo.")
+        # Enviar respuesta a WhatsApp
+        url = f"https://graph.facebook.com/v19.0/{META_PHONE_NUMBER_ID}/messages"
+        headers = {
+            "Authorization": f"Bearer {META_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": sender,
+            "type": "text",
+            "text": {"body": reply}
+        }
 
-# --- Fin del control anti-duplicación de lead ---
+        async with httpx.AsyncClient() as http_client:
+            r = await http_client.post(url, headers=headers, json=payload)
+            print("✅ WhatsApp enviado:", r.status_code, r.text)
+
+    except Exception as e:
+        print("❌ Error en el webhook:", e)
+
+    return {"status": "ok"}
 
 
 
