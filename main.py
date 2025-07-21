@@ -6,9 +6,28 @@ from openai import OpenAI
 import langdetect
 import requests
 import aiosqlite
-
+from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import Depends
+import secrets
 
 app = FastAPI()
+
+security = HTTPBasic()
+
+DASH_USER = os.getenv("DASH_USER", "admin")
+DASH_PASSWORD = os.getenv("DASH_PASSWORD", "pampa2024")
+
+def check_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_username = secrets.compare_digest(credentials.username, DASH_USER)
+    correct_password = secrets.compare_digest(credentials.password, DASH_PASSWORD)
+    if not (correct_username and correct_password):
+        from fastapi import HTTPException, status
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No autorizado",
+            headers={"WWW-Authenticate": "Basic"},
+        )
 
 # Tokens desde Fly.io
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
@@ -293,3 +312,42 @@ async def receive_message(request: Request):
         print("❌ Error en el webhook:", e)
 
     return {"status": "ok"}
+    
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard(credentials: HTTPBasicCredentials = Depends(check_auth)):
+    html = """
+    <html>
+    <head>
+        <title>Mensajes WhatsApp - Dashboard</title>
+        <style>
+            body { font-family: Arial, sans-serif; }
+            table { border-collapse: collapse; width: 100%; }
+            th, td { border: 1px solid #dddddd; padding: 8px; }
+            th { background-color: #f2f2f2; }
+            tr:nth-child(even) { background-color: #fafafa; }
+        </style>
+    </head>
+    <body>
+    <h2>Mensajes WhatsApp (últimos 50)</h2>
+    <table>
+        <tr>
+            <th>Fecha</th>
+            <th>WhatsApp ID</th>
+            <th>Nombre</th>
+            <th>Recibido</th>
+            <th>Enviado</th>
+        </tr>
+    """
+
+    async with aiosqlite.connect("mensajes.db") as db:
+        async with db.execute("SELECT fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado FROM mensajes ORDER BY fecha DESC LIMIT 50") as cursor:
+            async for row in cursor:
+                fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado = row
+                html += f"<tr><td>{fecha}</td><td>{whatsapp_id}</td><td>{nombre}</td><td>{mensaje_recibido}</td><td>{mensaje_enviado}</td></tr>"
+
+    html += """
+    </table>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
