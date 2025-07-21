@@ -406,7 +406,8 @@ async def dashboard(
     q: str = "",
     credentials: HTTPBasicCredentials = Depends(check_auth)
 ):
-    # Parámetros de paginación
+    # Asegura que la página sea al menos 1
+    page = max(1, page)
     page_size = 50
     offset = (page - 1) * page_size
 
@@ -423,7 +424,7 @@ async def dashboard(
         search_term = f"%{q}%"
         params.extend([search_term] * 5)
 
-    # Total de mensajes (para paginación)
+    # Totales y mensajes de la página
     async with aiosqlite.connect("mensajes.db") as db:
         async with db.execute("SELECT COUNT(*) FROM mensajes") as cursor:
             total_mensajes = (await cursor.fetchone())[0]
@@ -439,23 +440,28 @@ async def dashboard(
         # Mensajes de la página
         async with db.execute(
             f"""SELECT id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado 
-            FROM mensajes {search_sql} 
-            ORDER BY fecha DESC LIMIT ? OFFSET ?""",
+                FROM mensajes {search_sql} 
+                ORDER BY fecha DESC LIMIT ? OFFSET ?""",
             params + [page_size, offset]
         ) as cursor:
             mensajes = await cursor.fetchall()
 
-  html = f"""
+    prev_page = page - 1
+    next_page = page + 1
+    total_pages = ((total-1)//page_size) + 1
+
+    html = f"""
 <html>
 <head>
     <title>Mensajes WhatsApp - Dashboard</title>
     <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css' rel='stylesheet'>
     <style>
       .kpi-card {{ min-width: 200px; }}
-      .table-responsive {{ max-height: 60vh; }}
+      .table-responsive {{ max-height: 60vh; overflow-y: auto; }}
       td, th {{ vertical-align: middle; word-break: break-word; }}
       .sticky-th {{ position: sticky; top: 0; background: #f8f9fa; z-index: 2; }}
       .btn-small {{ font-size:15px; padding:4px 10px; margin:2px; cursor:pointer; }}
+      .lead-row {{ background-color: #e8f5e9 !important; }}
     </style>
     <script>
       function borrar(id) {{
@@ -501,22 +507,22 @@ async def dashboard(
   </div>
 
   <!-- Buscador y acciones -->
-  <div class="d-flex justify-content-between align-items-center mb-2">
+  <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap">
     <form method="get" class="mb-0 w-50 d-flex">
         <input type="text" id="q" name="q" class="form-control me-2" value="{q}" placeholder="Buscar...">
         <button type="submit" class="btn btn-outline-primary me-2">Buscar</button>
         <button type="button" onclick="descargarCSV()" class="btn btn-outline-secondary">Descargar CSV</button>
     </form>
-    <div>
-      <span class="me-3">Página <b>{page}</b> de <b>{((total-1)//page_size)+1}</b></span>
-      {"<a href='?page=%d&q=%s'><button class='btn btn-outline-secondary btn-sm'>&larr; Anterior</button></a>" % (page-1, q) if page > 1 else ""}
-      {"<a href='?page=%d&q=%s'><button class='btn btn-outline-secondary btn-sm'>Siguiente &rarr;</button></a>" % (page+1, q) if offset + page_size < total else ""}
+    <div class="mt-2 mt-md-0">
+      <span class="me-3">Página <b>{page}</b> de <b>{total_pages}</b></span>
+      {'<a href="?page=%d&q=%s"><button class="btn btn-outline-secondary btn-sm">&larr; Anterior</button></a>' % (prev_page, q) if page > 1 else '<button class="btn btn-outline-secondary btn-sm" disabled>&larr; Anterior</button>'}
+      {'<a href="?page=%d&q=%s"><button class="btn btn-outline-secondary btn-sm">Siguiente &rarr;</button></a>' % (next_page, q) if offset + page_size < total else ''}
     </div>
   </div>
 
   <!-- Tabla de mensajes -->
   <div class="table-responsive shadow-sm rounded">
-    <table class="table table-hover table-bordered align-middle mb-0" id="tablaMensajes">
+    <table class="table table-hover table-bordered table-striped align-middle mb-0" id="tablaMensajes">
       <thead>
         <tr>
           <th class="sticky-th">Fecha</th>
@@ -529,19 +535,21 @@ async def dashboard(
       </thead>
       <tbody>
 """
+    # Filas de la tabla
+    for row in mensajes:
+        id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado = row
+        is_lead = "Lead creado en Odoo" in (mensaje_enviado or "")
+        tr_class = "lead-row" if is_lead else ""
+        html += f"""<tr class="{tr_class}">
+            <td>{fecha}</td>
+            <td>{whatsapp_id}</td>
+            <td>{nombre}</td>
+            <td>{mensaje_recibido}</td>
+            <td>{mensaje_enviado}</td>
+            <td><button class='btn-small btn btn-danger btn-sm' onclick="borrar({id})">🗑️</button></td>
+        </tr>"""
 
-for row in mensajes:
-    id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado = row
-    html += f"""<tr>
-        <td>{fecha}</td>
-        <td>{whatsapp_id}</td>
-        <td>{nombre}</td>
-        <td>{mensaje_recibido}</td>
-        <td>{mensaje_enviado}</td>
-        <td><button class='btn-small btn btn-danger btn-sm' onclick="borrar({id})">🗑️</button></td>
-    </tr>"""
-
-html += """
+    html += """
       </tbody>
     </table>
   </div>
@@ -550,8 +558,9 @@ html += """
 </html>
 """
 
-return HTMLResponse(content=html)
+    return HTMLResponse(content=html)
 
+# --- Eliminar mensaje ---
 @app.get("/borrar_mensaje")
 async def borrar_mensaje(id: int, credentials: HTTPBasicCredentials = Depends(check_auth)):
     async with aiosqlite.connect("mensajes.db") as db:
@@ -559,6 +568,7 @@ async def borrar_mensaje(id: int, credentials: HTTPBasicCredentials = Depends(ch
         await db.commit()
     return {"status": "ok"}
 
+# --- Descargar CSV ---
 @app.get("/descargar_csv")
 async def descargar_csv(q: str = "", credentials: HTTPBasicCredentials = Depends(check_auth)):
     search_sql = ""
@@ -580,8 +590,8 @@ async def descargar_csv(q: str = "", credentials: HTTPBasicCredentials = Depends
     async with aiosqlite.connect("mensajes.db") as db:
         async with db.execute(
             f"""SELECT fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado 
-            FROM mensajes {search_sql} 
-            ORDER BY fecha DESC""",
+                FROM mensajes {search_sql} 
+                ORDER BY fecha DESC""",
             params
         ) as cursor:
             async for row in cursor:
