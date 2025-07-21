@@ -1,4 +1,4 @@
-# main.py
+    # main.py
 import os
 from fastapi import FastAPI, Request
 import httpx
@@ -165,6 +165,23 @@ async def guardar_mensaje(fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_
 
 from fastapi.responses import JSONResponse
 
+# Recupera los últimos N turnos de conversación (usuario y bot) para un usuario específico
+async def get_historial_usuario(whatsapp_id, n=6):
+    historial = []
+    async with aiosqlite.connect("mensajes.db") as db:
+        async with db.execute(
+            "SELECT mensaje_recibido, mensaje_enviado FROM mensajes WHERE whatsapp_id = ? ORDER BY fecha DESC LIMIT ?", (whatsapp_id, n)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            # Los mensajes se traen del más reciente al más antiguo, así que los invertimos para mantener el orden correcto
+            for recibido, enviado in reversed(rows):
+                if recibido:
+                    historial.append({"role": "user", "content": recibido})
+                if enviado:
+                    historial.append({"role": "assistant", "content": enviado})
+    return historial
+
+
 @app.get("/mensajes_test")
 async def mensajes_test():
     mensajes = []
@@ -262,12 +279,16 @@ async def receive_message(request: Request):
         system_prompt = base_prompt_en if detected_lang == "en" else base_prompt_es
 
         # Respuesta de OpenAI
+        # 1. Recupera historial reciente del usuario (por ejemplo, 6 turnos)
+        historial = await get_historial_usuario(sender, n=6)
+
+        # 2. Construye el contexto de mensajes para OpenAI
+        mensajes_openai = [{"role": "system", "content": system_prompt}] + historial + [{"role": "user", "content": text}]
+
+        # 3. Llama a OpenAI con historial
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
-            ]
+            messages=mensajes_openai
         )
         reply = response.choices[0].message.content.strip()
 
