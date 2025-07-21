@@ -10,6 +10,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
 import secrets
+from fastapi.responses import StreamingResponse
+import csv
+import io
 
 app = FastAPI()
 
@@ -314,21 +317,81 @@ async def receive_message(request: Request):
     return {"status": "ok"}
     
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(credentials: HTTPBasicCredentials = Depends(check_auth)):
-    html = """
+async def dashboard(
+    page: int = 1,
+    q: str = "",
+    credentials: HTTPBasicCredentials = Depends(check_auth)
+):
+    # Parámetros de paginación
+    page_size = 50
+    offset = (page - 1) * page_size
+
+    # Buscador SQL (búsqueda básica en varios campos)
+    search_sql = ""
+    params = []
+    if q:
+        search_sql = """WHERE 
+            fecha LIKE ? OR 
+            whatsapp_id LIKE ? OR 
+            nombre LIKE ? OR 
+            mensaje_recibido LIKE ? OR 
+            mensaje_enviado LIKE ?"""
+        search_term = f"%{q}%"
+        params.extend([search_term] * 5)
+
+    # Total de mensajes (para paginación)
+    async with aiosqlite.connect("mensajes.db") as db:
+        async with db.execute(f"SELECT COUNT(*) FROM mensajes {search_sql}", params) as cursor:
+            total = (await cursor.fetchone())[0]
+
+        # Mensajes de la página
+        async with db.execute(
+            f"""SELECT id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado 
+            FROM mensajes {search_sql} 
+            ORDER BY fecha DESC LIMIT ? OFFSET ?""",
+            params + [page_size, offset]
+        ) as cursor:
+            mensajes = await cursor.fetchall()
+
+    # HTML
+    html = f"""
     <html>
     <head>
         <title>Mensajes WhatsApp - Dashboard</title>
         <style>
-            body { font-family: Arial, sans-serif; }
-            table { border-collapse: collapse; width: 100%; }
-            th, td { border: 1px solid #dddddd; padding: 8px; }
-            th { background-color: #f2f2f2; }
-            tr:nth-child(even) { background-color: #fafafa; }
+            body {{ font-family: Arial, sans-serif; padding: 10px; }}
+            table {{ border-collapse: collapse; width: 100%; font-size: 15px; }}
+            th, td {{ border: 1px solid #dddddd; padding: 8px; word-break: break-all; }}
+            th {{ background-color: #f2f2f2; }}
+            tr:nth-child(even) {{ background-color: #fafafa; }}
+            input[type='text']{{ font-size:15px; padding:4px; }}
+            button, .btn-small {{ font-size:15px; padding:4px 10px; margin: 2px; cursor:pointer; }}
+            @media (max-width: 700px) {{
+                table, thead, tbody, th, td, tr {{ display:block; }}
+                th, td {{ border: none; }}
+                td {{ padding: 8px 0; }}
+                tr {{ margin-bottom: 15px; border-bottom: 1px solid #ddd; }}
+            }}
         </style>
+        <script>
+            function borrar(id) {{
+                if(confirm('¿Seguro que quieres borrar este mensaje?')){{
+                    fetch('/borrar_mensaje?id=' + id)
+                        .then(r => location.reload());
+                }}
+            }}
+            function descargarCSV() {{
+                window.location = '/descargar_csv?q=' + encodeURIComponent(document.getElementById('q').value);
+            }}
+        </script>
     </head>
     <body>
-    <h2>Mensajes WhatsApp (últimos 50)</h2>
+    <h2>Mensajes WhatsApp (página {page} de {((total-1)//page_size)+1})</h2>
+    <form method="get" style="margin-bottom:10px;">
+        <input type="text" id="q" name="q" value="{q}" placeholder="Buscar...">
+        <button type="submit">Buscar</button>
+        <button type="button" onclick="descargarCSV()">Descargar CSV</button>
+    </form>
     <table>
         <tr>
             <th>Fecha</th>
@@ -336,18 +399,66 @@ async def dashboard(credentials: HTTPBasicCredentials = Depends(check_auth)):
             <th>Nombre</th>
             <th>Recibido</th>
             <th>Enviado</th>
+            <th></th>
         </tr>
     """
+    for row in mensajes:
+        id, fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado = row
+        html += f"""<tr>
+        <td>{fecha}</td>
+        <td>{whatsapp_id}</td>
+        <td>{nombre}</td>
+        <td>{mensaje_recibido}</td>
+        <td>{mensaje_enviado}</td>
+        <td><button class='btn-small' onclick="borrar({id})">🗑️</button></td>
+        </tr>"""
+
+    html += "</table><div style='margin-top:12px;'>"
+
+    if page > 1:
+        html += f'<a href="?page={page-1}&q={q}"><button>&larr; Anterior</button></a>'
+    if offset + page_size < total:
+        html += f'<a href="?page={page+1}&q={q}"><button>Siguiente &rarr;</button></a>'
+
+    html += "</div></body></html>"
+    return HTMLResponse(content=html)
+
+@app.get("/borrar_mensaje")
+async def borrar_mensaje(id: int, credentials: HTTPBasicCredentials = Depends(check_auth)):
+    async with aiosqlite.connect("mensajes.db") as db:
+        await db.execute("DELETE FROM mensajes WHERE id = ?", (id,))
+        await db.commit()
+    return {"status": "ok"}
+
+@app.get("/descargar_csv")
+async def descargar_csv(q: str = "", credentials: HTTPBasicCredentials = Depends(check_auth)):
+    search_sql = ""
+    params = []
+    if q:
+        search_sql = """WHERE 
+            fecha LIKE ? OR 
+            whatsapp_id LIKE ? OR 
+            nombre LIKE ? OR 
+            mensaje_recibido LIKE ? OR 
+            mensaje_enviado LIKE ?"""
+        search_term = f"%{q}%"
+        params.extend([search_term] * 5)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Fecha", "WhatsApp ID", "Nombre", "Recibido", "Enviado"])
 
     async with aiosqlite.connect("mensajes.db") as db:
-        async with db.execute("SELECT fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado FROM mensajes ORDER BY fecha DESC LIMIT 50") as cursor:
+        async with db.execute(
+            f"""SELECT fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado 
+            FROM mensajes {search_sql} 
+            ORDER BY fecha DESC""",
+            params
+        ) as cursor:
             async for row in cursor:
-                fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado = row
-                html += f"<tr><td>{fecha}</td><td>{whatsapp_id}</td><td>{nombre}</td><td>{mensaje_recibido}</td><td>{mensaje_enviado}</td></tr>"
+                writer.writerow(row)
 
-    html += """
-    </table>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html)
+    output.seek(0)
+    return StreamingResponse(iter([output.read()]), media_type="text/csv", headers={
+        "Content-Disposition": "attachment; filename=mensajes.csv"
+    })
