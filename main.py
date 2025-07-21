@@ -141,7 +141,24 @@ async def guardar_mensaje(fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_
         """, (fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado))
         await db.commit()
 
+from fastapi.responses import JSONResponse
 
+@app.get("/mensajes_test")
+async def mensajes_test():
+    mensajes = []
+    async with aiosqlite.connect("mensajes.db") as db:
+        async with db.execute("SELECT fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado FROM mensajes ORDER BY fecha DESC LIMIT 20") as cursor:
+            async for row in cursor:
+                fecha, whatsapp_id, nombre, mensaje_recibido, mensaje_enviado = row
+                mensajes.append({
+                    "fecha": fecha,
+                    "whatsapp_id": whatsapp_id,
+                    "nombre": nombre,
+                    "mensaje_recibido": mensaje_recibido,
+                    "mensaje_enviado": mensaje_enviado,
+                })
+    return JSONResponse(content=mensajes)
+    
 @app.get("/")
 def root():
     return {"status": "ok"}
